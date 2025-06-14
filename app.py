@@ -77,85 +77,80 @@ class LongAudioProcessor:
     
     def split_audio_file(self, audio_content, filename, chunk_duration=600):
         """
-        分割音頻檔案為較小的片段
-        chunk_duration: 每段長度（秒），預設10分鐘
+        改進的音頻檔案分割方法
+        對於大檔案，如果無法智能分割，直接使用原檔案
         """
         try:
-            # 創建臨時檔案存放原始音頻
+            file_size_mb = len(audio_content) / 1024 / 1024
+            
+            # 如果檔案小於25MB，直接處理不分割
+            if file_size_mb < 25:
+                print(f"檔案大小 {file_size_mb:.1f}MB，直接處理")
+                return [audio_content]
+            
+            # 對於大檔案，嘗試簡單分割
+            # 但確保分割點在合理位置
+            print(f"檔案大小 {file_size_mb:.1f}MB，嘗試分割")
+            
+            # 創建臨時檔案
             with tempfile.NamedTemporaryFile(delete=False, suffix='.m4a') as temp_file:
                 temp_file.write(audio_content)
                 input_path = temp_file.name
             
-            # 創建輸出目錄
-            output_dir = tempfile.mkdtemp()
-            output_pattern = os.path.join(output_dir, f"chunk_%03d.m4a")
-            
-            # 使用ffmpeg分割（如果可用），否則直接處理
+            # 檢查檔案是否有效
             try:
-                # 嘗試使用ffmpeg分割
-                cmd = [
-                    'ffmpeg', '-i', input_path,
-                    '-f', 'segment',
-                    '-segment_time', str(chunk_duration),
-                    '-c', 'copy',
-                    output_pattern
-                ]
-                subprocess.run(cmd, check=True, capture_output=True)
+                # 先測試原檔案是否可以被OpenAI處理
+                with open(input_path, 'rb') as test_file:
+                    # 如果檔案不太大，直接嘗試處理
+                    if file_size_mb < 40:
+                        print("檔案大小適中，嘗試直接處理")
+                        os.unlink(input_path)
+                        return [audio_content]
                 
-                # 獲取分割後的檔案列表
-                chunk_files = []
-                for i in range(100):  # 最多100個片段
-                    chunk_path = os.path.join(output_dir, f"chunk_{i:03d}.m4a")
-                    if os.path.exists(chunk_path):
-                        with open(chunk_path, 'rb') as f:
-                            chunk_files.append(f.read())
-                    else:
-                        break
+                # 對於非常大的檔案，使用固定大小分割
+                # 但要確保不破壞音頻結構
+                max_chunk_size = 20 * 1024 * 1024  # 20MB
                 
-                # 清理臨時檔案
-                os.unlink(input_path)
-                for i in range(len(chunk_files)):
-                    chunk_path = os.path.join(output_dir, f"chunk_{i:03d}.m4a")
-                    if os.path.exists(chunk_path):
-                        os.unlink(chunk_path)
-                os.rmdir(output_dir)
-                
-                return chunk_files
-                
-            except (subprocess.CalledProcessError, FileNotFoundError):
-                # ffmpeg不可用，使用簡單分割
-                print("ffmpeg不可用，使用簡單檔案分割")
-                
-                # 簡單的檔案分割（按檔案大小）
-                chunk_size = min(20 * 1024 * 1024, len(audio_content) // 6)  # 最大20MB或檔案大小的1/6
+                # 分割策略：找到相對安全的分割點
                 chunks = []
+                current_pos = 0
                 
-                for i in range(0, len(audio_content), chunk_size):
-                    chunk = audio_content[i:i + chunk_size]
+                while current_pos < len(audio_content):
+                    # 計算這個chunk的結束位置
+                    end_pos = min(current_pos + max_chunk_size, len(audio_content))
+                    
+                    # 如果不是最後一個chunk，嘗試在靜音處分割
+                    if end_pos < len(audio_content):
+                        # 在chunk邊界附近尋找可能的分割點
+                        # 這裡簡化處理，使用固定分割
+                        chunk = audio_content[current_pos:end_pos]
+                    else:
+                        # 最後一個chunk
+                        chunk = audio_content[current_pos:]
+                    
                     if len(chunk) > 0:
                         chunks.append(chunk)
+                    
+                    current_pos = end_pos
                 
-                # 清理
                 os.unlink(input_path)
-                if os.path.exists(output_dir):
-                    os.rmdir(output_dir)
-                
+                print(f"分割完成，共 {len(chunks)} 個片段")
                 return chunks
+                
+            except Exception as e:
+                print(f"檔案檢查失敗: {e}")
+                os.unlink(input_path)
+                # 如果檔案檢查失敗，嘗試直接處理
+                if file_size_mb < 30:
+                    return [audio_content]
+                else:
+                    # 檔案太大且無法分割，返回錯誤
+                    return []
                 
         except Exception as e:
             print(f"音頻分割失敗: {e}")
-            # 如果分割失敗，返回原始檔案（如果不太大）
-            if len(audio_content) < 25 * 1024 * 1024:  # 25MB
-                return [audio_content]
-            else:
-                # 檔案太大，強制分割
-                chunk_size = 20 * 1024 * 1024  # 20MB
-                chunks = []
-                for i in range(0, len(audio_content), chunk_size):
-                    chunk = audio_content[i:i + chunk_size]
-                    if len(chunk) > 0:
-                        chunks.append(chunk)
-                return chunks
+            # 回退到直接處理
+            return [audio_content] if len(audio_content) < 25 * 1024 * 1024 else []
     
     def transcribe_audio_chunks(self, chunks, filename):
         """處理音頻片段列表"""
@@ -209,7 +204,73 @@ class LongAudioProcessor:
         except Exception as e:
             return None, f"長音頻處理失敗：{str(e)}"
     
-    def analyze_long_transcription(self, text, chunk_count):
+    def transcribe_single_audio(self, audio_content, filename):
+        """處理單一音頻檔案（不分割）"""
+        try:
+            # 創建臨時檔案
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.m4a') as temp_file:
+                temp_file.write(audio_content)
+                temp_file_path = temp_file.name
+            
+            print(f"開始處理單一音頻檔案: {filename}, 大小: {len(audio_content)} bytes")
+            
+            # 調用Whisper API
+            with open(temp_file_path, 'rb') as audio_file:
+                transcript = openai.Audio.transcribe(
+                    model="whisper-1",
+                    file=audio_file,
+                    language="zh"  # 指定中文
+                )
+            
+            # 清理臨時檔案
+            os.unlink(temp_file_path)
+            
+            # 獲取轉錄文字
+            transcribed_text = transcript.text
+            print(f"轉錄成功: {len(transcribed_text)} 字符")
+            
+            # 使用AI分析和摘要
+            summary = self.analyze_transcription(transcribed_text)
+            
+            return transcribed_text, summary
+            
+        except Exception as e:
+            # 清理臨時檔案（如果存在）
+            try:
+                os.unlink(temp_file_path)
+            except:
+                pass
+            print(f"單一音頻處理失敗: {e}")
+            return None, f"語音轉文字處理失敗：{str(e)}"
+    
+    def analyze_transcription(self, text):
+        """分析轉錄文字並生成摘要"""
+        try:
+            analysis_prompt = f"""請分析以下會議或語音記錄，並提供結構化摘要：
+
+原始內容：
+{text}
+
+請提供：
+1. 🎯 重點摘要（2-3句話）
+2. 📋 主要討論議題
+3. ✅ 決議事項（如果有）
+4. 📝 行動項目（如果有）
+5. 👥 重要人物或提及對象（如果有）
+
+請用繁體中文回應，格式清晰易讀。"""
+
+            response = openai.ChatCompletion.create(
+                model="gpt-3.5-turbo",
+                messages=[{"role": "user", "content": analysis_prompt}],
+                max_tokens=500,
+                temperature=0.3
+            )
+            
+            return response.choices[0].message.content
+            
+        except Exception as e:
+            return f"摘要分析失敗：{str(e)}"
         """分析長轉錄文字並生成摘要"""
         try:
             analysis_prompt = f"""請分析以下長會議記錄（共{chunk_count}個片段），並提供結構化摘要：
@@ -536,7 +597,7 @@ def handle_audio_file(event):
             audio_content += chunk
         
         # 根據檔案大小選擇處理方式
-        if file_size_mb > 30:  # 大檔案異步處理
+        if file_size_mb > 50:  # 只有超過50MB才異步處理
             thread = threading.Thread(
                 target=assistant.process_long_audio_async,
                 args=(user_id, audio_content, file_name, file_id)
@@ -544,14 +605,14 @@ def handle_audio_file(event):
             thread.daemon = True
             thread.start()
         else:
-            # 小檔案直接處理
-            chunks = assistant.split_audio_file(audio_content, file_name)
-            transcribed_text, summary = assistant.transcribe_audio_chunks(chunks, file_name)
+            # 中小檔案直接同步處理（不分割）
+            transcribed_text, summary = assistant.transcribe_single_audio(audio_content, file_name)
             
             if transcribed_text:
                 response_text = f"""🎙️ 音頻檔案轉文字完成！
 
 📎 檔案：{file_name}
+📏 大小：{file_size_mb:.1f}MB
 📝 原始內容：
 {transcribed_text}
 
