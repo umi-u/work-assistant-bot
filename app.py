@@ -1,4 +1,6 @@
 import os
+import tempfile
+import requests
 from flask import Flask, request, abort
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
@@ -6,6 +8,7 @@ from linebot.models import *
 import openai
 from dotenv import load_dotenv
 from datetime import datetime
+import re
 
 # 載入環境變數
 load_dotenv()
@@ -38,6 +41,7 @@ class WorkAssistant:
                 2. 提供工作效率建議  
                 3. 幫助撰寫工作相關文件
                 4. 分析工作問題並提供解決方案
+                5. 處理會議記錄和語音轉文字
                 
                 請用繁體中文回應，語氣專業但親切。回應要簡潔，適合手機閱讀。
                 每次回應不超過300字。"""}
@@ -67,6 +71,70 @@ class WorkAssistant:
         except Exception as e:
             return f"抱歉，處理您的請求時發生錯誤。請稍後再試。\n錯誤詳情：{str(e)}"
     
+    def transcribe_audio(self, audio_content, filename):
+        """語音轉文字功能"""
+        try:
+            # 創建臨時檔案
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.m4a') as temp_file:
+                temp_file.write(audio_content)
+                temp_file_path = temp_file.name
+            
+            # 調用Whisper API
+            with open(temp_file_path, 'rb') as audio_file:
+                transcript = openai.Audio.transcribe(
+                    model="whisper-1",
+                    file=audio_file,
+                    language="zh"  # 指定中文
+                )
+            
+            # 清理臨時檔案
+            os.unlink(temp_file_path)
+            
+            # 獲取轉錄文字
+            transcribed_text = transcript.text
+            
+            # 使用AI分析和摘要
+            summary = self.analyze_transcription(transcribed_text)
+            
+            return transcribed_text, summary
+            
+        except Exception as e:
+            # 清理臨時檔案（如果存在）
+            try:
+                os.unlink(temp_file_path)
+            except:
+                pass
+            return None, f"語音轉文字處理失敗：{str(e)}"
+    
+    def analyze_transcription(self, text):
+        """分析轉錄文字並生成摘要"""
+        try:
+            analysis_prompt = f"""請分析以下會議或語音記錄，並提供結構化摘要：
+
+原始內容：
+{text}
+
+請提供：
+1. 🎯 重點摘要（2-3句話）
+2. 📋 主要討論議題
+3. ✅ 決議事項（如果有）
+4. 📝 行動項目（如果有）
+5. 👥 重要人物或提及對象（如果有）
+
+請用繁體中文回應，格式清晰易讀。"""
+
+            response = openai.ChatCompletion.create(
+                model="gpt-3.5-turbo",
+                messages=[{"role": "user", "content": analysis_prompt}],
+                max_tokens=500,
+                temperature=0.3
+            )
+            
+            return response.choices[0].message.content
+            
+        except Exception as e:
+            return f"摘要分析失敗：{str(e)}"
+    
     def handle_quick_commands(self, message):
         """處理快捷指令"""
         message_lower = message.lower().strip()
@@ -80,17 +148,23 @@ class WorkAssistant:
 • 效率提升技巧分享  
 • 文件撰寫協助
 • 問題分析與解決方案
+• 🎙️ 語音轉文字（NEW！）
 
 💬 使用方式：
 • 直接對話：「幫我規劃明天的工作」
 • 尋求建議：「如何提高工作效率？」
 • 文件協助：「幫我寫會議紀錄」
-• 問題諮詢：「專案進度落後怎麼辦？」
+• 🎙️ 語音記錄：直接發送語音訊息
 
 🎯 快捷指令：
 • 「今日規劃」- 獲得當日工作建議
 • 「效率技巧」- 查看提升效率的方法
 • 「時間管理」- 學習時間管理技巧
+
+🎙️ 語音功能：
+• 發送語音訊息自動轉為文字
+• 智能摘要和重點提取
+• 會議記錄整理
 
 就像跟同事聊天一樣，告訴我你的工作需求吧！"""
 
@@ -115,6 +189,9 @@ class WorkAssistant:
 • 準備明天的重點工作
 
 💡 小提醒：記得每90分鐘休息一下，保持最佳工作狀態！
+
+🎙️ 語音功能提示：
+可以直接發送語音訊息，我會自動轉換為文字並整理摘要！
 
 有特定的工作項目需要安排嗎？告訴我詳情，我可以給你更具體的建議！"""
 
@@ -143,6 +220,11 @@ class WorkAssistant:
 • 設定時間提醒
 • 定期檢視和調整計劃
 
+🎙️ 語音記錄技巧：
+• 會議時可錄音後發送給我整理
+• 語音備忘比打字更快速
+• 走路時的靈感可隨時記錄
+
 想深入了解哪個技巧？或有特定的效率問題想討論？"""
 
         # 時間管理
@@ -168,6 +250,11 @@ class WorkAssistant:
 • 評估新任務的重要性
 • 避免過度承諾
 • 專注在最重要的事情上
+
+🎙️ 語音記錄應用：
+• 語音日記追蹤時間使用
+• 快速記錄會議決議
+• 隨手記錄突發想法
 
 需要針對特定情況制定時間管理策略嗎？例如：專案管理、會議安排等？"""
 
@@ -213,45 +300,119 @@ def handle_message(event):
         TextSendMessage(text=reply_message)
     )
 
-@handler.add(MessageEvent, message=(ImageMessage, AudioMessage, FileMessage))
+@handler.add(MessageEvent, message=AudioMessage)
+def handle_audio(event):
+    """處理語音訊息 - 新功能！"""
+    user_id = event.source.user_id
+    audio_id = event.message.id
+    
+    print(f"收到用戶 {user_id} 的語音訊息，ID: {audio_id}")
+    
+    try:
+        # 發送處理中訊息
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage(text="🎙️ 正在處理您的語音訊息，請稍候...")
+        )
+        
+        # 下載語音檔案
+        message_content = line_bot_api.get_message_content(audio_id)
+        audio_content = b""
+        for chunk in message_content.iter_content():
+            audio_content += chunk
+        
+        print(f"語音檔案大小: {len(audio_content)} bytes")
+        
+        # 調用語音轉文字
+        transcribed_text, summary = assistant.transcribe_audio(audio_content, f"audio_{audio_id}.m4a")
+        
+        if transcribed_text:
+            # 成功轉換，發送結果
+            response_text = f"""🎙️ 語音轉文字完成！
+
+📝 原始內容：
+{transcribed_text}
+
+{summary}
+
+💡 您可以繼續詢問相關問題，或發送更多語音記錄！"""
+            
+            print(f"語音轉文字成功: {transcribed_text[:100]}...")
+            
+        else:
+            # 轉換失敗
+            response_text = f"""❌ 語音處理失敗
+
+{summary}
+
+請確認：
+• 語音檔案大小不超過25MB
+• 說話清晰，避免過多背景噪音
+• 可以嘗試重新錄音發送"""
+            
+            print(f"語音轉文字失敗: {summary}")
+        
+        # 發送處理結果
+        line_bot_api.push_message(
+            user_id,
+            TextSendMessage(text=response_text)
+        )
+        
+    except Exception as e:
+        error_msg = f"""❌ 語音處理出現錯誤
+
+錯誤詳情：{str(e)}
+
+建議：
+• 請稍後再試
+• 確認語音檔案格式正確
+• 可以嘗試重新錄音"""
+        
+        print(f"語音處理錯誤: {str(e)}")
+        
+        line_bot_api.push_message(
+            user_id,
+            TextSendMessage(text=error_msg)
+        )
+
+@handler.add(MessageEvent, message=(ImageMessage, FileMessage))
 def handle_file(event):
-    """處理檔案上傳"""
+    """處理圖片和其他檔案上傳"""
     user_id = event.source.user_id
     
-    if isinstance(event.message, AudioMessage):
-        reply_text = """🎙️ 收到您的錄音檔！
-
-目前語音轉文字功能正在開發中。
-未來將支援：
-• 自動轉換語音為文字
-• 生成會議記錄摘要
-• 提取重點和行動項目
-
-敬請期待！目前請用文字描述您的需求。"""
-        
-    elif isinstance(event.message, ImageMessage):
+    if isinstance(event.message, ImageMessage):
         reply_text = """🖼️ 收到您的圖片！
 
-目前圖片分析功能正在開發中。
-未來將支援：
-• 文字識別(OCR)
-• 圖表數據分析
-• 文件內容解析
+🔧 圖片處理功能正在開發中，即將支援：
+• 📝 文字識別(OCR)
+• 📊 圖表數據分析
+• 📋 文件內容解析
 
-敬請期待！目前請用文字描述圖片內容，我可以協助分析。"""
+💡 目前您可以：
+• 🎙️ 發送語音訊息進行轉文字
+• 💬 文字描述圖片內容，我可以協助分析
+
+敬請期待更多功能！"""
         
     elif isinstance(event.message, FileMessage):
         reply_text = """📄 收到您的檔案！
 
-目前檔案處理功能正在開發中。
-未來將支援：
-• Excel數據分析
-• Word文檔處理
-• PDF內容解析
+🔧 檔案處理功能正在開發中，即將支援：
+• 📊 Excel數據分析
+• 📝 Word文檔處理
+• 📑 PDF內容解析
 
-敬請期待！目前請告訴我檔案內容，我可以協助分析和建議。"""
+💡 目前您可以：
+• 🎙️發送語音訊息自動轉文字
+• 💬 描述檔案內容，我可以協助分析
+
+敬請期待更多功能！"""
     else:
-        reply_text = "收到您的檔案，正在處理中..."
+        reply_text = """📎 收到您的檔案！
+
+🎙️ 目前支援語音轉文字功能，其他檔案處理功能正在開發中。
+
+請發送語音訊息體驗最新功能！"""
     
     line_bot_api.reply_message(
         event.reply_token,
@@ -277,6 +438,7 @@ def hello():
     return """
     <h1>🤖 工作助理 LINE Bot</h1>
     <p>✅ 服務正常運行中</p>
+    <p>🎙️ 新功能：語音轉文字</p>
     <p>📱 掃描QR Code將Bot加為LINE好友開始使用</p>
     <p>🔧 狀態：準備就緒</p>
     """
@@ -287,12 +449,14 @@ def test():
     return {
         "status": "OK",
         "message": "工作助理Bot運行正常",
+        "features": ["AI對話", "語音轉文字", "工作規劃建議"],
         "timestamp": datetime.now().isoformat()
     }
 
 if __name__ == "__main__":
     port = int(os.environ.get('PORT', 5000))
     print(f"🚀 工作助理Bot啟動中...")
+    print(f"🎙️ 語音轉文字功能已啟用")
     print(f"📡 監聽端口: {port}")
     print(f"🌐 本地測試: http://localhost:{port}")
     app.run(host='0.0.0.0', port=port, debug=True)
