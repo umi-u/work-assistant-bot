@@ -570,7 +570,7 @@ def handle_audio(event):
             thread.start()
         else:
             # 直接處理小檔案
-            transcribed_text, organized_record = self.transcribe_single_audio(audio_content, f"voice_{audio_id}.m4a")
+            transcribed_text, organized_record = assistant.transcribe_single_audio(audio_content, f"voice_{audio_id}.m4a")
             
             if transcribed_text:
                 # 發送整理後的記錄
@@ -667,19 +667,15 @@ def handle_audio_file(event):
             thread.start()
         else:
             # 中小檔案直接同步處理（不分割）
-            transcribed_text, summary = assistant.transcribe_single_audio(audio_content, file_name)
+            transcribed_text, organized_record = assistant.transcribe_single_audio(audio_content, file_name)
             
             if transcribed_text:
-                # 準備完整結果 - 只提供整理後的記錄
+                # 準備整理後的記錄
                 print(f"轉錄成功，開始整理記錄: {len(transcribed_text)} 字符")
                 
-                # 生成整理後的記錄
-                organized_record = self.analyze_transcription(transcribed_text)
-                
-                # 準備發送的訊息
                 messages_to_send = []
                 
-                # 第一則：檔案資訊和處理狀態
+                # 第一則：檔案資訊
                 file_info = f"""📋 會議記錄整理完成！
 
 📎 來源檔案：{file_name}
@@ -689,13 +685,12 @@ def handle_audio_file(event):
 
                 messages_to_send.append(file_info)
                 
-                # 第二則：整理後的記錄內容
+                # 第二則：整理後的記錄
                 if organized_record and len(organized_record) > 0:
-                    # 檢查記錄長度，必要時分段
                     if len(organized_record) <= 4500:
                         messages_to_send.append(organized_record)
                     else:
-                        # 記錄太長，需要分段
+                        # 記錄太長，分段處理
                         record_parts = []
                         current_part = ""
                         lines = organized_record.split('\n')
@@ -711,7 +706,6 @@ def handle_audio_file(event):
                         if current_part:
                             record_parts.append(current_part.strip())
                         
-                        # 發送各部分
                         for i, part in enumerate(record_parts):
                             if len(record_parts) > 1:
                                 part_header = f"📋 會議記錄 ({i+1}/{len(record_parts)})：\n\n"
@@ -728,7 +722,6 @@ def handle_audio_file(event):
                 for i, message in enumerate(messages_to_send):
                     try:
                         line_bot_api.push_message(user_id, TextSendMessage(text=message))
-                        # 訊息間稍微間隔
                         if i < len(messages_to_send) - 1:
                             time.sleep(0.8)
                     except Exception as e:
@@ -739,7 +732,7 @@ def handle_audio_file(event):
                 error_text = f"""❌ 音頻檔案處理失敗
 
 📎 檔案：{file_name}
-{summary}"""
+{organized_record}"""
                 
                 line_bot_api.push_message(
                     user_id,
