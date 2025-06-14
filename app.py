@@ -394,8 +394,25 @@ def handle_file(event):
 
 敬請期待更多功能！"""
         
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage(text=reply_text)
+        )
+        
     elif isinstance(event.message, FileMessage):
-        reply_text = """📄 收到您的檔案！
+        # 檢查是否為音頻檔案
+        file_name = getattr(event.message, 'fileName', '')
+        file_type = file_name.lower() if file_name else ''
+        
+        # 支援的音頻格式
+        audio_extensions = ['.mp3', '.m4a', '.wav', '.aac', '.ogg', '.flac', '.opus']
+        
+        if any(file_type.endswith(ext) for ext in audio_extensions):
+            # 處理音頻檔案
+            handle_audio_file(event)
+        else:
+            # 處理其他檔案
+            reply_text = """📄 收到您的檔案！
 
 🔧 檔案處理功能正在開發中，即將支援：
 • 📊 Excel數據分析
@@ -403,21 +420,108 @@ def handle_file(event):
 • 📑 PDF內容解析
 
 💡 目前您可以：
-• 🎙️發送語音訊息自動轉文字
+• 🎙️ 發送音頻檔案自動轉文字
 • 💬 描述檔案內容，我可以協助分析
 
-敬請期待更多功能！"""
+📎 檔案名稱：{file_name}
+
+敬請期待更多功能！""".format(file_name=file_name or "未知檔案")
+            
+            line_bot_api.reply_message(
+                event.reply_token,
+                TextSendMessage(text=reply_text)
+            )
     else:
         reply_text = """📎 收到您的檔案！
 
 🎙️ 目前支援語音轉文字功能，其他檔案處理功能正在開發中。
 
-請發送語音訊息體驗最新功能！"""
+請發送語音訊息或音頻檔案體驗轉文字功能！"""
+        
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage(text=reply_text)
+        )
+
+def handle_audio_file(event):
+    """處理音頻檔案上傳"""
+    user_id = event.source.user_id
+    file_id = event.message.id
+    file_name = getattr(event.message, 'fileName', f'audio_{file_id}')
     
-    line_bot_api.reply_message(
-        event.reply_token,
-        TextSendMessage(text=reply_text)
-    )
+    print(f"收到用戶 {user_id} 的音頻檔案: {file_name}")
+    
+    try:
+        # 發送處理中訊息
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage(text=f"🎙️ 正在處理您的音頻檔案「{file_name}」，請稍候...")
+        )
+        
+        # 下載音頻檔案
+        message_content = line_bot_api.get_message_content(file_id)
+        audio_content = b""
+        for chunk in message_content.iter_content():
+            audio_content += chunk
+        
+        print(f"音頻檔案大小: {len(audio_content)} bytes")
+        
+        # 調用語音轉文字
+        transcribed_text, summary = assistant.transcribe_audio(audio_content, file_name)
+        
+        if transcribed_text:
+            # 成功轉換，發送結果
+            response_text = f"""🎙️ 音頻檔案轉文字完成！
+
+📎 檔案名稱：{file_name}
+📝 原始內容：
+{transcribed_text}
+
+{summary}
+
+💡 您可以繼續詢問相關問題，或發送更多音頻檔案！"""
+            
+            print(f"音頻檔案轉文字成功: {transcribed_text[:100]}...")
+            
+        else:
+            # 轉換失敗
+            response_text = f"""❌ 音頻檔案處理失敗
+
+📎 檔案：{file_name}
+{summary}
+
+請確認：
+• 音頻檔案大小不超過25MB
+• 檔案格式：mp3, m4a, wav, aac等
+• 音頻內容清晰，避免過多背景噪音
+• 可以嘗試重新上傳檔案"""
+            
+            print(f"音頻檔案轉文字失敗: {summary}")
+        
+        # 發送處理結果
+        line_bot_api.push_message(
+            user_id,
+            TextSendMessage(text=response_text)
+        )
+        
+    except Exception as e:
+        error_msg = f"""❌ 音頻檔案處理出現錯誤
+
+📎 檔案：{file_name}
+錯誤詳情：{str(e)}
+
+建議：
+• 請稍後再試
+• 確認音頻檔案格式正確（mp3, m4a, wav等）
+• 檔案大小不超過25MB
+• 可以嘗試重新上傳"""
+        
+        print(f"音頻檔案處理錯誤: {str(e)}")
+        
+        line_bot_api.push_message(
+            user_id,
+            TextSendMessage(text=error_msg)
+        )
 
 @handler.add(PostbackEvent)
 def handle_postback(event):
