@@ -400,17 +400,14 @@ def handle_file(event):
         )
         
     elif isinstance(event.message, FileMessage):
-        # 檢查是否為音頻檔案
-        file_name = getattr(event.message, 'fileName', '')
-        file_type = file_name.lower() if file_name else ''
+        # 更通用的音頻檔案檢查
+        print(f"收到檔案訊息: {event.message}")
         
-        # 支援的音頻格式
-        audio_extensions = ['.mp3', '.m4a', '.wav', '.aac', '.ogg', '.flac', '.opus']
-        
-        if any(file_type.endswith(ext) for ext in audio_extensions):
-            # 處理音頻檔案
+        # 先嘗試處理為音頻檔案
+        try:
             handle_audio_file(event)
-        else:
+        except Exception as e:
+            print(f"音頻處理失敗，當作一般檔案處理: {e}")
             # 處理其他檔案
             reply_text = """📄 收到您的檔案！
 
@@ -423,9 +420,9 @@ def handle_file(event):
 • 🎙️ 發送音頻檔案自動轉文字
 • 💬 描述檔案內容，我可以協助分析
 
-📎 檔案名稱：{file_name}
+📎 檔案類型可能不支援，請嘗試常見音頻格式（mp3, m4a, wav等）
 
-敬請期待更多功能！""".format(file_name=file_name or "未知檔案")
+敬請期待更多功能！"""
             
             line_bot_api.reply_message(
                 event.reply_token,
