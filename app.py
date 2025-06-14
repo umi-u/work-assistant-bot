@@ -244,33 +244,52 @@ class LongAudioProcessor:
             return None, f"語音轉文字處理失敗：{str(e)}"
     
     def analyze_transcription(self, text):
-        """分析轉錄文字並生成摘要"""
+        """分析轉錄文字並生成智能記錄整理"""
         try:
-            analysis_prompt = f"""請分析以下會議或語音記錄，並提供結構化摘要：
+            analysis_prompt = f"""請將以下語音記錄整理成專業的會議或記錄摘要，直接提供結構化的整理結果：
 
-原始內容：
+語音內容：
 {text}
 
-請提供：
-1. 🎯 重點摘要（2-3句話）
-2. 📋 主要討論議題
-3. ✅ 決議事項（如果有）
-4. 📝 行動項目（如果有）
-5. 👥 重要人物或提及對象（如果有）
+請提供完整的記錄整理，包括：
 
-請用繁體中文回應，格式清晰易讀。"""
+🎯 **重點摘要**
+[用2-3句話概括主要內容]
+
+📋 **主要議題**
+[條列式列出討論的重點議題]
+
+✅ **重要決議**
+[如果有決定或結論，明確列出]
+
+📝 **行動項目**
+[需要執行的具體任務，包含負責人和時間]
+
+📊 **關鍵數據**
+[提及的重要數字、日期、金額等]
+
+👥 **相關人員**
+[參與或提及的重要人物]
+
+⏰ **時間安排**
+[重要的截止日期或時程安排]
+
+💡 **補充說明**
+[其他重要細節或注意事項]
+
+請用繁體中文，條理清晰，直接可用作正式記錄。避免提及"語音記錄"等字眼，直接以會議記錄的格式呈現。"""
 
             response = openai.ChatCompletion.create(
                 model="gpt-3.5-turbo",
                 messages=[{"role": "user", "content": analysis_prompt}],
-                max_tokens=500,
+                max_tokens=800,
                 temperature=0.3
             )
             
             return response.choices[0].message.content
             
         except Exception as e:
-            return f"摘要分析失敗：{str(e)}"
+            return f"記錄整理失敗：{str(e)}"
         """分析長轉錄文字並生成摘要"""
         try:
             analysis_prompt = f"""請分析以下長會議記錄（共{chunk_count}個片段），並提供結構化摘要：
@@ -333,19 +352,53 @@ class LongAudioProcessor:
                 # 成功處理
                 self.processing_status[user_id]['status'] = 'completed'
                 
-                # 準備最終結果
-                result_text = f"""🎉 長音頻轉文字完成！
+                # 準備結果訊息（分段發送）
+                processing_time = (datetime.now() - self.processing_status[user_id]['start_time']).total_seconds()
+                
+                # 第一則：處理完成資訊
+                info_message = f"""🎉 長音頻轉文字完成！
 
 📎 檔案：{filename}
 📊 統計：{chunk_count} 個片段，約 {len(full_transcript)} 字符
-⏱️ 處理時間：{(datetime.now() - self.processing_status[user_id]['start_time']).total_seconds():.0f}秒
-
-📝 完整轉錄內容：
-{full_transcript[:1500]}{"..." if len(full_transcript) > 1500 else ""}
-
-{summary}
-
-💡 完整內容已轉換完畢，您可以繼續詢問相關問題！"""
+⏱️ 處理時間：{processing_time:.0f}秒"""
+                
+                # 第二則：轉錄內容（分段）
+                transcript_messages = []
+                transcript_header = "📝 完整轉錄內容：\n"
+                
+                if len(full_transcript) <= 4500:
+                    transcript_messages.append(transcript_header + full_transcript)
+                else:
+                    transcript_messages.append(transcript_header + "[內容較長，分段顯示]")
+                    
+                    # 分段顯示
+                    chunk_size = 4500
+                    for i in range(0, len(full_transcript), chunk_size):
+                        chunk = full_transcript[i:i + chunk_size]
+                        part_num = i // chunk_size + 1
+                        total_parts = (len(full_transcript) + chunk_size - 1) // chunk_size
+                        
+                        chunk_message = f"📝 轉錄內容 ({part_num}/{total_parts})：\n{chunk}"
+                        transcript_messages.append(chunk_message)
+                
+                # 第三則：AI摘要
+                summary_message = f"🤖 AI智能分析：\n{summary}"
+                if len(summary_message) > 4800:
+                    summary_message = f"🤖 AI智能分析：\n{summary[:4500]}...\n[摘要已截斷]"
+                
+                # 組合所有要發送的訊息
+                all_messages = [info_message] + transcript_messages + [summary_message]
+                all_messages.append("💡 長音頻轉錄完成！您可以繼續詢問相關問題！")
+                
+                # 逐一發送
+                for i, message in enumerate(all_messages):
+                    try:
+                        line_bot_api.push_message(user_id, TextSendMessage(text=message))
+                        if i < len(all_messages) - 1:
+                            time.sleep(0.5)
+                    except Exception as e:
+                        print(f"發送長音頻結果訊息 {i+1} 失敗: {e}")
+                        continue
                 
             else:
                 # 處理失敗
@@ -359,12 +412,11 @@ class LongAudioProcessor:
 • 檢查音頻檔案品質
 • 嘗試較短的音頻片段
 • 確認檔案格式正確"""
-            
-            # 發送最終結果
-            line_bot_api.push_message(
-                user_id,
-                TextSendMessage(text=result_text)
-            )
+                
+                line_bot_api.push_message(
+                    user_id,
+                    TextSendMessage(text=result_text)
+                )
             
         except Exception as e:
             # 處理異常
@@ -394,24 +446,24 @@ class LongAudioProcessor:
 • 效率提升技巧分享  
 • 文件撰寫協助
 • 問題分析與解決方案
-• 🎙️ 長音頻轉文字（支援1.5小時+）
+• 🎙️ 智能會議記錄整理（支援1.5小時+）
 
 💬 使用方式：
 • 直接對話：「幫我規劃明天的工作」
 • 尋求建議：「如何提高工作效率？」
 • 文件協助：「幫我寫會議紀錄」
-• 🎙️ 長會議記錄：上傳音頻檔案自動分割處理
+• 🎙️ 會議記錄：上傳音頻檔案自動整理成專業記錄
 
 🎯 快捷指令：
 • 「今日規劃」- 獲得當日工作建議
 • 「效率技巧」- 查看提升效率的方法
 • 「時間管理」- 學習時間管理技巧
 
-🎙️ 長音頻功能：
+🎙️ 智能記錄功能：
 • 支援最長1.5小時的會議錄音
-• 自動分割大檔案處理
-• 智能摘要和重點提取
-• 行動項目和決議整理
+• 自動整理成專業會議記錄格式
+• 提取重點、決議、行動項目
+• 無需查看原始文字，直接獲得整理結果
 
 就像跟同事聊天一樣，告訴我你的工作需求吧！"""
 
@@ -518,25 +570,34 @@ def handle_audio(event):
             thread.start()
         else:
             # 直接處理小檔案
-            chunks = assistant.split_audio_file(audio_content, f"voice_{audio_id}.m4a")
-            transcribed_text, summary = assistant.transcribe_audio_chunks(chunks, f"voice_{audio_id}.m4a")
+            transcribed_text, organized_record = self.transcribe_single_audio(audio_content, f"voice_{audio_id}.m4a")
             
             if transcribed_text:
-                response_text = f"""🎙️ 語音轉文字完成！
+                # 發送整理後的記錄
+                response_messages = []
+                
+                response_messages.append(f"""🎙️語音記錄整理完成！
 
-📝 原始內容：
-{transcribed_text}
-
-{summary}
-
-💡 您可以繼續詢問相關問題！"""
+📊 原始長度：{len(transcribed_text)} 字符
+⏱️ 處理完成""")
+                
+                if organized_record:
+                    response_messages.append(organized_record)
+                else:
+                    response_messages.append("⚠️ 記錄整理過程中出現問題。")
+                
+                response_messages.append("✅ 語音記錄處理完成！有任何問題都可以詢問我。")
+                
+                # 逐一發送
+                for i, msg in enumerate(response_messages):
+                    line_bot_api.push_message(user_id, TextSendMessage(text=msg))
+                    if i < len(response_messages) - 1:
+                        time.sleep(0.8)
             else:
-                response_text = f"❌ 語音處理失敗\n{summary}"
-            
-            line_bot_api.push_message(
-                user_id,
-                TextSendMessage(text=response_text)
-            )
+                line_bot_api.push_message(
+                    user_id,
+                    TextSendMessage(text=f"❌ 語音處理失敗\n{organized_record}")
+                )
         
     except Exception as e:
         error_msg = f"❌ 語音處理出現錯誤：{str(e)}"
@@ -609,26 +670,81 @@ def handle_audio_file(event):
             transcribed_text, summary = assistant.transcribe_single_audio(audio_content, file_name)
             
             if transcribed_text:
-                response_text = f"""🎙️ 音頻檔案轉文字完成！
+                # 準備完整結果 - 只提供整理後的記錄
+                print(f"轉錄成功，開始整理記錄: {len(transcribed_text)} 字符")
+                
+                # 生成整理後的記錄
+                organized_record = self.analyze_transcription(transcribed_text)
+                
+                # 準備發送的訊息
+                messages_to_send = []
+                
+                # 第一則：檔案資訊和處理狀態
+                file_info = f"""📋 會議記錄整理完成！
 
-📎 檔案：{file_name}
-📏 大小：{file_size_mb:.1f}MB
-📝 原始內容：
-{transcribed_text}
+📎 來源檔案：{file_name}
+📏 檔案大小：{file_size_mb:.1f}MB
+📊 原始字數：{len(transcribed_text)} 字符
+⏱️ 處理完成"""
 
-{summary}
-
-💡 您可以繼續詢問相關問題！"""
+                messages_to_send.append(file_info)
+                
+                # 第二則：整理後的記錄內容
+                if organized_record and len(organized_record) > 0:
+                    # 檢查記錄長度，必要時分段
+                    if len(organized_record) <= 4500:
+                        messages_to_send.append(organized_record)
+                    else:
+                        # 記錄太長，需要分段
+                        record_parts = []
+                        current_part = ""
+                        lines = organized_record.split('\n')
+                        
+                        for line in lines:
+                            if len(current_part + line + '\n') <= 4000:
+                                current_part += line + '\n'
+                            else:
+                                if current_part:
+                                    record_parts.append(current_part.strip())
+                                current_part = line + '\n'
+                        
+                        if current_part:
+                            record_parts.append(current_part.strip())
+                        
+                        # 發送各部分
+                        for i, part in enumerate(record_parts):
+                            if len(record_parts) > 1:
+                                part_header = f"📋 會議記錄 ({i+1}/{len(record_parts)})：\n\n"
+                                messages_to_send.append(part_header + part)
+                            else:
+                                messages_to_send.append(part)
+                else:
+                    messages_to_send.append("⚠️ 記錄整理過程中出現問題，請稍後重試。")
+                
+                # 第三則：結尾提示
+                messages_to_send.append("✅ 記錄整理完成！您可以詢問相關問題或要求進一步分析特定內容。")
+                
+                # 逐一發送訊息
+                for i, message in enumerate(messages_to_send):
+                    try:
+                        line_bot_api.push_message(user_id, TextSendMessage(text=message))
+                        # 訊息間稍微間隔
+                        if i < len(messages_to_send) - 1:
+                            time.sleep(0.8)
+                    except Exception as e:
+                        print(f"發送整理記錄訊息 {i+1} 失敗: {e}")
+                        continue
+                        
             else:
-                response_text = f"""❌ 音頻檔案處理失敗
+                error_text = f"""❌ 音頻檔案處理失敗
 
 📎 檔案：{file_name}
 {summary}"""
-            
-            line_bot_api.push_message(
-                user_id,
-                TextSendMessage(text=response_text)
-            )
+                
+                line_bot_api.push_message(
+                    user_id,
+                    TextSendMessage(text=error_text)
+                )
         
     except Exception as e:
         error_msg = f"""❌ 音頻檔案處理出現錯誤
